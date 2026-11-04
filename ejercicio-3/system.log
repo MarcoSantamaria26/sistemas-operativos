@@ -1,0 +1,19 @@
+2026-11-04 20:09:31			Base de datos creada e inicializada.
+2026-11-04 20:10:00			Registro exitoso del usuario: Murdok
+2026-11-04 20:10:28	1	Murdok	Inicio de sesión exitoso.
+2026-11-04 20:10:36	1	Murdok	Consulta de inventario (Mostrar).
+2026-11-04 20:10:52	1	Murdok	Alta exitosa de producto ID 0 (manzana)
+2026-11-04 20:11:05	1	Murdok	Alta exitosa de producto ID 1 (pera)
+2026-11-04 20:11:17	1	Murdok	Alta exitosa de producto ID 2 (limon)
+2026-11-04 20:11:30	1	Murdok	Alta exitosa de producto ID 3 (banana)
+2026-11-04 20:11:33	1	Murdok	Consulta de inventario (Mostrar).
+2026-11-04 20:12:08	1	Murdok	Edición exitosa de producto ID 1 (Nuevo precio: 1221nuevo_precio)
+2026-11-04 20:12:26	1	Murdok	Consulta de inventario (Mostrar).
+2026-11-04 20:12:44	1	Murdok	Baja lógica exitosa del producto ID 1
+2026-11-04 20:12:47	1	Murdok	Consulta de inventario (Mostrar).
+2026-11-04 20:13:11	1	Murdok	Alta exitosa de producto ID 1 (naranja)
+2026-11-04 20:13:15	1	Murdok	Consulta de inventario (Mostrar).
+2026-11-04 20:13:38	1	Murdok	Baja lógica exitosa del producto ID 3
+2026-11-04 20:13:39	1	Murdok	Consulta de inventario (Mostrar).
+2026-11-04 20:13:47	1	Murdok	Generación de reporte HTML.
+2026-11-04 20:13:52	1	Murdok	Salida del sistema.

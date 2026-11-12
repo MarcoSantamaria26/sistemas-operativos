@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
-declare -r DB_FILE="data.sq3"
-declare -r LOG_SYS="system.log"
-declare -r LOG_ERR="error.log"
+declare -r DB_FILE="data.sq3"          # Archivo de la base de datos SQLite3
+declare -r LOG_SYS="system.log"        # Archivo de auditoría de acciones
+declare -r LOG_ERR="error.log"         # Archivo de registro de errores
 
 # Variables globales para control de sesión activa
 declare GLOBAL_USER_ID=""
@@ -15,29 +15,44 @@ declare -r -i OPCION_MOSTRAR=4
 declare -r -i OPCION_REPORTE=5
 declare -r -i OPCION_SALIR=6
 
-# Registra las acciones exitosas en system.log en formato TSV
 registrar_log_sistema() {
     local accion=$1
     local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S') # Obtiene fecha y hora actual del sistema
-    
-    # Formato TSV: FechaHora \t ID_Usuario \t Nombre_Usuario \t Acción
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S') # Obtiene fecha y hora actual
     printf "%s\t%s\t%s\t%s\n" "$timestamp" "$GLOBAL_USER_ID" "$GLOBAL_USER_NAME" "$accion" >> "$LOG_SYS"
 }
 
-# Registra los errores en error.log con timestamp
 registrar_log_error() {
     local mensaje_error=$1
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
     printf "%s\tERROR:\t%s\n" "$timestamp" "$mensaje_error" >> "$LOG_ERR"
+}
+
+# Muestra una ventana de mensaje simple (Aceptar)
+tui_msg() {
+    local titulo=$1
+    local mensaje=$2
+    whiptail --title "$titulo" --msgbox "$mensaje" 10 50
+}
+
+# Muestra una caja de entrada de texto y captura el resultado
+tui_input() {
+    local mensaje=$1
+    # Whiptail devuelve el texto por el canal de errores (2), 
+    # por eso usamos el intercambio de descriptores (3>&1 1>&2 2>&3) para capturarlo en la variable.
+    whiptail --title "Sistema de Inventario TUI" --inputbox "$mensaje" 8 50 3>&1 1>&2 2>&3
+}
+
+# Muestra una caja de entrada segura para contraseñas (oculta los caracteres con asteriscos)
+tui_password() {
+    local mensaje=$1
+    whiptail --title "Seguridad" --passwordbox "$mensaje" 8 50 3>&1 1>&2 2>&3
 }
 
 inicializar_base_datos() {
     if [[ ! -f "$DB_FILE" ]]; then
         sqlite3 "$DB_FILE" <<EOF
-
         CREATE TABLE usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             usuario TEXT UNIQUE NOT NULL,
@@ -55,10 +70,6 @@ EOF
     fi
 }
 
-bienvenida() {
-    printf "\n\nBienvenido/a al sistema de inventario con SQLite3\n\n"
-}
-
 cifrar_sha256() {
     local texto=$1
     printf "%s" "$texto" | sha256sum | awk '{print $1}'
@@ -70,28 +81,23 @@ registrar_usuario() {
     local pass_hash=""
     local resultado_sql=""
 
-    printf "\n--- REGISTRO DE NUEVO USUARIO ---\n"
-    read -rp "Ingrese nombre de usuario: " nuevo_usuario
+    nuevo_usuario=$(tui_input "Ingrese nombre de nuevo usuario:")
+    
+    # Si el usuario cancela o deja vacío, retorna
+    [[ -z "$nuevo_usuario" ]] && return
 
-    if [[ -z "$nuevo_usuario" ]]; then
-        printf "Error: El nombre de usuario no puede estar vacío.\n"
-        registrar_log_error "Intento de registro con usuario vacío."
-        return
-    fi
-
-    read -rs -p "Ingrese contraseña: " nueva_clave
-    printf "\n"
+    nueva_clave=$(tui_password "Ingrese contraseña para '$nuevo_usuario':")
+    [[ -z "$nueva_clave" ]] && return
 
     pass_hash=$(cifrar_sha256 "$nueva_clave")
 
-    # Intentamos insertar en la base de datos. SQLite arroja error si el usuario ya existe por el UNIQUE.
     resultado_sql=$(sqlite3 "$DB_FILE" "INSERT INTO usuarios (usuario, password_hash) VALUES ('$nuevo_usuario', '$pass_hash');" 2>&1)
 
     if [[ -n "$resultado_sql" ]]; then
-        printf "Error: El usuario '%s' ya existe o hubo un fallo en la DB.\n" "$nuevo_usuario"
+        tui_msg "Error" "El usuario '$nuevo_usuario' ya existe o hubo un fallo."
         registrar_log_error "Fallo al registrar usuario '$nuevo_usuario': $resultado_sql"
     else
-        printf "Usuario registrado exitosamente.\n"
+        tui_msg "Éxito" "Usuario registrado correctamente."
         registrar_log_sistema "Registro exitoso del usuario: $nuevo_usuario"
     fi
 }
@@ -102,166 +108,170 @@ iniciar_sesion() {
     local pass_hash_ingresado=""
     local query_res=""
 
-    printf "\n--- INICIO DE SESIÓN ---\n"
-    read -rp "Usuario: " user_ingresado
-    read -rs -p "Contraseña: " pass_ingresada
-    printf "\n"
+    user_ingresado=$(tui_input "Ingrese su usuario:")
+    [[ -z "$user_ingresado" ]] && return 1
+
+    pass_ingresada=$(tui_password "Ingrese su contraseña:")
+    [[ -z "$pass_ingresada" ]] && return 1
 
     pass_hash_ingresado=$(cifrar_sha256 "$pass_ingresada")
 
-    # Consultamos en SQLite si coincide el usuario y el hash de la contraseña
     query_res=$(sqlite3 "$DB_FILE" "SELECT id FROM usuarios WHERE usuario = '$user_ingresado' AND password_hash = '$pass_hash_ingresado';")
 
     if [[ -n "$query_res" ]]; then
-        # Guardamos las credenciales globales del usuario autenticado para los logs
         GLOBAL_USER_ID="$query_res"
         GLOBAL_USER_NAME="$user_ingresado"
-        
-        printf "Acceso concedido. ¡Bienvenido/a %s!\n" "$user_ingresado"
         registrar_log_sistema "Inicio de sesión exitoso."
         return 0
     else
-        printf "Error: Usuario o contraseña incorrectos.\n"
-        registrar_log_error "Intento de inicio de sesión fallido para el usuario: $user_ingresado"
+        tui_msg "Acceso Denegado" "Usuario o contraseña incorrectos."
+        registrar_log_error "Intento de inicio de sesión fallido para: $user_ingresado"
         return 1
     fi
 }
 
 menu_autenticacion() {
-    local opcion_auth=0
+    local opcion_auth=""
 
-    while (( opcion_auth != 1 && opcion_auth != 2 )); do
-        printf "\n--- AUTENTICACIÓN ---\n"
-        printf "1. Iniciar sesión\n"
-        printf "2. Registrar usuario\n"
-        read -rp "Seleccione una opción (1-2): " opcion_auth
+    while true; do
+        # Menú visual con whiptail donde el usuario se mueve con flechitas
+        opcion_auth=$(whiptail --title "Autenticación del Sistema" --menu "Seleccione una opción:" 12 50 2 \
+            "1" "Iniciar sesión" \
+            "2" "Registrar usuario" 3>&1 1>&2 2>&3)
+
+        # Si el usuario presiona Cancelar (Esc), sale del script
+        [[ $? -ne 0 ]] && exit 0
 
         case $opcion_auth in
             1)
-                if ! iniciar_sesion; then
-                    opcion_auth=0
+                if iniciar_sesion; then
+                    break # Rompe el ciclo y entra al sistema si el login es correcto
                 fi
                 ;;
             2)
                 registrar_usuario
-                opcion_auth=0
-                ;;
-            *)
-                printf "Opción inválida.\n"
-                registrar_log_error "Opción de autenticación inválida seleccionada."
-                opcion_auth=0
                 ;;
         esac
     done
 }
 
 alta() {
-    declare -i id=$1
-    declare nombre=$2
-    declare precio=$3
+    local id_str=""
+    local nombre=""
+    local precio_str=""
     local existe_id=""
     local resultado_sql=""
 
-    # Verificamos si ya existe un producto activo con ese ID en SQLite
-    existe_id=$(sqlite3 "$DB_FILE" "SELECT id FROM productos WHERE id = $id AND activo = 1;")
+    id_str=$(tui_input "Ingrese el ID del nuevo producto:")
+    [[ -z "$id_str" ]] && return
+
+    nombre=$(tui_input "Ingrese el Nombre del producto:")
+    [[ -z "$nombre" ]] && return
+
+    precio_str=$(tui_input "Ingrese el Precio del producto:")
+    [[ -z "$precio_str" ]] && return
+
+    existe_id=$(sqlite3 "$DB_FILE" "SELECT id FROM productos WHERE id = $id_str AND activo = 1;")
 
     if [[ -n "$existe_id" ]]; then
-        printf "Error: El producto con ID %d ya existe.\n" "$id"
-        registrar_log_error "Intento de alta duplicada para ID de producto: $id"
+        tui_msg "Error" "El producto con ID $id_str ya existe."
+        registrar_log_error "Intento de alta duplicada para ID: $id_str"
         return
     fi
 
-    resultado_sql=$(sqlite3 "$DB_FILE" "INSERT OR REPLACE INTO productos (id, nombre, precio, activo) VALUES ($id, '$nombre', $precio, 1);" 2>&1)
+    resultado_sql=$(sqlite3 "$DB_FILE" "INSERT OR REPLACE INTO productos (id, nombre, precio, activo) VALUES ($id_str, '$nombre', $precio_str, 1);" 2>&1)
 
     if [[ -n "$resultado_sql" ]]; then
-        printf "Error al guardar el producto en la base de datos.\n"
-        registrar_log_error "SQL Error en alta ID $id: $resultado_sql"
+        tui_msg "Error" "Fallo al guardar en la base de datos."
+        registrar_log_error "SQL Error en alta ID $id_str: $resultado_sql"
     else
-        printf "Producto %d (%s) guardado con precio $%s.\n" "$id" "$nombre" "$precio"
-        registrar_log_sistema "Alta exitosa de producto ID $id ($nombre)"
+        tui_msg "Éxito" "Producto guardado correctamente."
+        registrar_log_sistema "Alta exitosa de producto ID $id_str ($nombre)"
     fi
 }
 
 editar() {
-    declare -i id_editar=$1
+    local id_str=""
+    local consulta=""
     local nombre_prod=""
     local activo_prod=""
     local nuevo_precio=""
-    local consulta=""
     local resultado_sql=""
 
-    # Consultamos nombre y estado del producto en SQL
-    consulta=$(sqlite3 "$DB_FILE" "SELECT nombre, activo FROM productos WHERE id = $id_editar;")
+    id_str=$(tui_input "Ingrese el ID del producto a EDITAR:")
+    [[ -z "$id_str" ]] && return
+
+    consulta=$(sqlite3 "$DB_FILE" "SELECT nombre, activo FROM productos WHERE id = $id_str;")
 
     if [[ -z "$consulta" ]]; then
-        printf "El producto no existe.\n"
-        registrar_log_error "Intento de edición sobre producto inexistente ID $id_editar"
+        tui_msg "Error" "El producto no existe."
+        registrar_log_error "Edición sobre producto inexistente ID $id_str"
         return
     fi
 
-    # Extraemos los campos separados por el pipe '|' que devuelve sqlite3 por defecto
     nombre_prod=$(echo "$consulta" | cut -d'|' -f1)
     activo_prod=$(echo "$consulta" | cut -d'|' -f2)
 
     if [[ "$activo_prod" != "1" ]]; then
-        printf "El producto está inactivo y no se puede editar.\n"
-        registrar_log_error "Intento de edición sobre producto inactivo ID $id_editar"
+        tui_msg "Error" "El producto está inactivo y no se puede editar."
         return
     fi
 
-    read -rp "Ingrese nuevo Precio para '$nombre_prod': " nuevo_precio
+    nuevo_precio=$(tui_input "Ingrese nuevo Precio para '$nombre_prod':")
+    [[ -z "$nuevo_precio" ]] && return
 
-    if [[ -z "$nuevo_precio" ]]; then
-        printf "Error: El precio no puede estar vacío.\n"
-        return
-    fi
-
-    resultado_sql=$(sqlite3 "$DB_FILE" "UPDATE productos SET precio = $nuevo_precio WHERE id = $id_editar;" 2>&1)
+    resultado_sql=$(sqlite3 "$DB_FILE" "UPDATE productos SET precio = $nuevo_precio WHERE id = $id_str;" 2>&1)
 
     if [[ -n "$resultado_sql" ]]; then
-        printf "Error al actualizar el producto.\n"
-        registrar_log_error "SQL Error en edición ID $id_editar: $resultado_sql"
+        tui_msg "Error" "Fallo al actualizar el producto."
+        registrar_log_error "SQL Error en edición ID $id_str: $resultado_sql"
     else
-        printf "Producto %d actualizado con el nuevo precio $%s.\n" "$id_editar" "$nuevo_precio"
-        registrar_log_sistema "Edición exitosa de producto ID $id_editar (Nuevo precio: $$nuevo_precio)"
+        tui_msg "Éxito" "Producto actualizado correctamente."
+        registrar_log_sistema "Edición exitosa de producto ID $id_str"
     fi
 }
 
 baja() {
-    declare -i id_baja=$1
+    local id_str=""
     local activo_prod=""
     local resultado_sql=""
 
-    # Verificamos estado actual del producto
-    activo_prod=$(sqlite3 "$DB_FILE" "SELECT activo FROM productos WHERE id = $id_baja;")
+    id_str=$(tui_input "Ingrese el ID del producto a ELIMINAR:")
+    [[ -z "$id_str" ]] && return
+
+    activo_prod=$(sqlite3 "$DB_FILE" "SELECT activo FROM productos WHERE id = $id_str;")
 
     if [[ -z "$activo_prod" ]]; then
-        printf "El producto no existe.\n"
-        registrar_log_error "Intento de baja sobre producto inexistente ID $id_baja"
+        tui_msg "Error" "El producto no existe."
         return
     elif [[ "$activo_prod" == "0" ]]; then
-        printf "El producto ya se encontraba inactivo.\n"
-        registrar_log_error "Intento de baja redundante sobre producto ya inactivo ID $id_baja"
+        tui_msg "Aviso" "El producto ya se encontraba inactivo."
         return
     fi
 
-    resultado_sql=$(sqlite3 "$DB_FILE" "UPDATE productos SET activo = 0 WHERE id = $id_baja;" 2>&1)
+    resultado_sql=$(sqlite3 "$DB_FILE" "UPDATE productos SET activo = 0 WHERE id = $id_str;" 2>&1)
 
     if [[ -n "$resultado_sql" ]]; then
-        printf "Error al dar de baja el producto.\n"
-        registrar_log_error "SQL Error en baja ID $id_baja: $resultado_sql"
+        tui_msg "Error" "Fallo al eliminar el producto."
+        registrar_log_error "SQL Error en baja ID $id_str: $resultado_sql"
     else
-        printf "Producto %d eliminado.\n" "$id_baja"
-        registrar_log_sistema "Baja lógica exitosa del producto ID $id_baja"
+        tui_msg "Éxito" "Producto eliminado correctamente."
+        registrar_log_sistema "Baja lógica exitosa del producto ID $id_str"
     fi
 }
 
 mostrar() {
-    printf "\nLISTADO:\n"
-    sqlite3 "$DB_FILE" "SELECT id, nombre, precio FROM productos WHERE activo = 1;" | while IFS='|' read -r id nombre precio; do
-        printf "ID %s : %s - $%s\n" "$id" "$nombre" "$precio"
-    done
-    registrar_log_sistema "Consulta de inventario (Mostrar)."
+    local listado=""
+    
+    # Preparamos el texto formateado para mostrar dentro de una ventana de texto (textbox / msgbox)
+    listado=$(sqlite3 "$DB_FILE" "SELECT id || ' | ' || nombre || ' | $' || precio FROM productos WHERE activo = 1;")
+
+    if [[ -z "$listado" ]]; then
+        tui_msg "Inventario" "El inventario está vacío."
+    else
+        whiptail --title "Listado de Inventario" --msgbox "$listado" 15 50
+    fi
+    registrar_log_sistema "Consulta de inventario (Mostrar TUI)."
 }
 
 generar_html() {
@@ -301,47 +311,38 @@ EOF
 </html>
 EOF
 
-    printf "\nReporte 'productos.html' generado exitosamente.\n"
+    tui_msg "Reporte" "Reporte 'productos.html' generado exitosamente."
     registrar_log_sistema "Generación de reporte HTML."
 }
 
 main() {
-
     inicializar_base_datos
-    bienvenida
-
     menu_autenticacion
 
-    declare opcion=0
-    declare -i id=0
-    declare nombre=""
-    declare precio=""
+    local opcion=""
 
-    while [[ "$opcion" != "$OPCION_SALIR" ]]; do
-        printf "\nACCIONES:\n"
-        printf "1. Alta producto\n"
-        printf "2. Editar producto existente\n"
-        printf "3. Baja producto\n"
-        printf "4. Mostrar inventario\n"
-        printf "5. Generar reporte HTML\n"
-        printf "6. Salir\n"
-        read -rp "Opcion: " opcion
-        printf "\n"
+    while true; do
+        # Menú principal visual con whiptail
+        opcion=$(whiptail --title "Menú Principal - Inventario" --menu "Seleccione una acción:" 16 50 6 \
+            "1" "Alta producto" \
+            "2" "Editar producto existente" \
+            "3" "Baja producto" \
+            "4" "Mostrar inventario" \
+            "5" "Generar reporte HTML" \
+            "6" "Salir" 3>&1 1>&2 2>&3)
+
+        # Si presiona cancelar o sale, interrumpe el bucle y cierra
+        [[ $? -ne 0 ]] && break
 
         case $opcion in
             $OPCION_ALTA)
-                read -rp "Ingrese ID: " id
-                read -rp "Ingrese Nombre: " nombre
-                read -rp "Ingrese Precio: " precio
-                alta "$id" "$nombre" "$precio"
+                alta
                 ;;
             $OPCION_EDITAR)
-                read -rp "Ingrese ID a editar: " id
-                editar "$id"
+                editar
                 ;;
             $OPCION_BAJA)
-                read -rp "Ingrese ID a eliminar: " id
-                baja "$id"
+                baja
                 ;;
             $OPCION_MOSTRAR)
                 mostrar
@@ -350,16 +351,14 @@ main() {
                 generar_html
                 ;;
             $OPCION_SALIR)
-                printf "\nSaliendo del programa...\n"
                 registrar_log_sistema "Salida del sistema."
-                ;;
-            *)
-                printf "\nOpcion invalida.\n"
-                registrar_log_error "Opción de menú principal inválida seleccionada."
+                break
                 ;;
         esac
     done
 
+    clear
+    printf "Saliendo del programa...\n"
     return 0
 }
 
